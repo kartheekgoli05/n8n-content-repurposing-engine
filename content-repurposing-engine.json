@@ -1,0 +1,872 @@
+{
+  "name": "Content Repurposing Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Repurposing Engine\n\n**One input → a month of content.**\n\nPaste a URL (blog post, article) or raw text into the form. The workflow extracts every distinct idea worth saying, writes platform-specific posts for each, assigns them dates across the next 4 weeks, and queues them in `content_queue`.\n\nA second schedule then publishes whatever is due, each day, at each platform's posting time.\n\n### Why this beats generating from thin air\nThin-air topics are what you'd get from asking Claude directly. This extracts from source material you already own — your own writing, a client call, a webinar. Better quality, and genuinely impossible by hand at this volume.\n\n### Setup\n1. Data Table `content_queue`: `sourceTitle`, `angle`, `platform`, `content`, `scheduledFor`, `scheduledTime`, `status`\n2. Anthropic credential — Header Auth, `x-api-key`\n3. Publisher credential — Header Auth, `Authorization` = `Apikey KEY`\n4. Gmail credential + your email in both Gmail nodes\n5. Edit the BRAND block in `ExtractIdeas`\n\n### Two entry points\n- **Form** → fill the queue (run whenever you have source material)\n- **Every 30 min** → publish whatever's due, at each platform's own posting time",
+        "height": 620,
+        "width": 460
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000001",
+      "name": "ReadMe",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1160,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "formTitle": "Repurpose Content",
+        "formDescription": "Paste a URL or the raw text of something you've already made. It becomes a month of posts.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Source URL",
+              "placeholder": "https://... (leave blank if pasting text)"
+            },
+            {
+              "fieldLabel": "Or paste the text",
+              "fieldType": "textarea",
+              "placeholder": "Blog post, transcript, case study, notes..."
+            },
+            {
+              "fieldLabel": "Posts to generate",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "8"
+                  },
+                  {
+                    "option": "12"
+                  },
+                  {
+                    "option": "16"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Start date",
+              "fieldType": "date",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000002",
+      "name": "SubmitSource",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -1160,
+        460
+      ],
+      "webhookId": "7d0b0000-0000-4000-8000-000000000002"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json['Source URL'] }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000003",
+      "name": "HasURL",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -940,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json['Source URL'] }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000004",
+      "name": "FetchPage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -720,
+        360
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "articleText",
+              "cssSelector": "article, main, .post-content, .entry-content, body",
+              "returnValue": "text"
+            },
+            {
+              "key": "pageTitle",
+              "cssSelector": "h1",
+              "returnValue": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000005",
+      "name": "ExtractArticle",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        -500,
+        360
+      ],
+      "notes": "Selector list covers most blog layouts, falling back to body. Adjust if a specific site returns junk."
+    },
+    {
+      "parameters": {
+        "jsCode": "const form = $('SubmitSource').first().json;\n\n// Source text came either from the fetched page or straight from the textarea.\nlet sourceText = '';\nlet sourceTitle = '';\n\ntry {\n  sourceText = $json.articleText || '';\n  sourceTitle = $json.pageTitle || form['Source URL'] || 'Untitled source';\n} catch (e) { sourceText = ''; }\n\nif (!sourceText || sourceText.length < 200) {\n  sourceText = form['Or paste the text'] || '';\n  sourceTitle = sourceTitle || 'Pasted text';\n}\n\nif (!sourceText || sourceText.length < 200) {\n  throw new Error('No usable source text. Provide a URL that returns an article, or paste at least a few paragraphs.');\n}\n\n// Trim to keep the prompt sane and the bill small.\nsourceText = sourceText.replace(/\\s+/g, ' ').trim().slice(0, 18000);\n\nreturn [{\n  json: {\n    sourceText,\n    sourceTitle: String(sourceTitle).slice(0, 120),\n    postCount: parseInt(form['Posts to generate'], 10) || 12,\n    startDate: form['Start date']\n  }\n}];"
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000006",
+      "name": "NormalizeSource",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -280,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-5\",\n  \"max_tokens\": 4000,\n  \"temperature\": 0.6,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": {{ JSON.stringify('BRAND\\nName: EDIT THIS\\nWhat it does: EDIT THIS — one sentence\\nAudience: EDIT THIS — who you are talking to\\nVoice: clear, specific, no hype, no exclamation marks, no emoji spam\\nNever produce: generic motivational content, engagement bait, buzzwords\\n\\nSOURCE MATERIAL\\nTitle: ' + $json.sourceTitle + '\\n\\n' + $json.sourceText + '\\n\\nTASK\\nExtract the ' + $json.postCount + ' most distinct, genuinely useful ideas in this material. Each must stand alone and give a reader something concrete — a method, a number, a mistake to avoid, a counterintuitive point, a specific example.\\n\\nRules:\\n- No idea may overlap with another. If two are close, drop one and find a different angle.\\n- Prefer the specific over the general. \"We cut onboarding from 9 days to 2\" beats \"onboarding matters\".\\n- Do not invent facts that are not in the source.\\n- Vary the format across the set: how-to, opinion, observation, mistake, example, question.\\n\\nRespond with ONLY a JSON array, no markdown fences:\\n[{\"angle\": \"the specific idea in one line\", \"format\": \"how-to|opinion|observation|mistake|example|question\", \"keyPoint\": \"the concrete detail from the source this rests on\"}]') }} }\n  ]\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000007",
+      "name": "ExtractIdeas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -60,
+        460
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "EDIT THE BRAND BLOCK HERE. This is the node that determines whether output is usable or generic."
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $('NormalizeSource').first().json;\n\nconst raw = $json.content?.[0]?.text ?? '';\nconst clean = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n\nlet ideas;\ntry {\n  ideas = JSON.parse(clean);\n  if (!Array.isArray(ideas)) ideas = [ideas];\n} catch (e) {\n  throw new Error('Idea extraction returned unparseable output: ' + raw.slice(0, 300));\n}\n\nreturn ideas.map((idea, i) => ({\n  json: {\n    ...idea,\n    sourceTitle: src.sourceTitle,\n    startDate: src.startDate,\n    ideaIndex: i\n  }\n}));"
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000008",
+      "name": "ParseIdeas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 3,
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000009",
+      "name": "BatchIdeas",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        380,
+        460
+      ],
+      "notes": "Three at a time keeps you under Anthropic's rate limit on larger batches."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-5\",\n  \"max_tokens\": 2000,\n  \"temperature\": 0.7,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": {{ JSON.stringify('You write social content for YOUR BRAND (edit this). Voice: clear, specific, no hype, no exclamation marks, no emoji spam. Never write generic motivational content or engagement bait.\\n\\nIdea: ' + $json.angle + '\\nFormat: ' + $json.format + '\\nGrounded in this specific detail: ' + $json.keyPoint + '\\n\\nWrite three versions — same idea, genuinely rewritten per platform, not the same text with different hashtags.\\n\\nLinkedIn: 150-250 words. Open with the specific detail, not a rhetorical question. Professional but human. Two hashtags at most, or none.\\nInstagram: 80-150 words. Warmer, more direct. Short lines with breaks. 5-8 relevant hashtags at the end.\\nFacebook: 100-180 words. Conversational, written for someone scrolling.\\n\\nRespond with ONLY a JSON object, no markdown fences:\\n{\"linkedin\": \"...\", \"instagram\": \"...\", \"facebook\": \"...\"}') }} }\n  ]\n}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "7d0b0000-0000-4000-8000-00000000000a",
+      "name": "WriteVariants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const idea = { ...$('BatchIdeas').item.json };\n\nconst raw = $json.content?.[0]?.text ?? '';\nconst clean = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n\nlet v;\ntry {\n  v = JSON.parse(clean);\n} catch (e) {\n  v = { linkedin: '[REVIEW NEEDED] ' + raw.slice(0, 500), instagram: '', facebook: '' };\n}\n\n// ---- POSTING WINDOWS — edit these ----\n// Sensible B2B starting defaults. Replace with your own numbers once\n// you have three months of your own analytics. These are a starting\n// point, not a law.\nconst PLATFORM_TIMES = {\n  linkedin:  '09:00',   // weekday mornings, before the working day fills up\n  facebook:  '13:00',   // lunchtime scroll\n  instagram: '18:30'    // evening, after work\n};\n// ---------------------------------------\n\n// Spread posts across weekdays from the chosen start date.\n// Post i lands on Mon / Wed / Fri of week floor(i/3).\nconst DAY_OFFSETS = [0, 2, 4];\nconst i = idea.ideaIndex;\nconst week = Math.floor(i / 3);\nconst dayOffset = (week * 7) + DAY_OFFSETS[i % 3];\n\nconst start = new Date(idea.startDate);\nconst scheduled = new Date(start.getTime() + dayOffset * 24 * 60 * 60 * 1000);\nconst scheduledFor = scheduled.toISOString().slice(0, 10);\n\nconst rows = [];\nfor (const platform of ['linkedin', 'facebook', 'instagram']) {\n  const content = v[platform];\n  if (!content || !content.trim()) continue;\n  rows.push({\n    json: {\n      sourceTitle: idea.sourceTitle,\n      angle: idea.angle,\n      platform,\n      content,\n      scheduledFor,\n      scheduledTime: PLATFORM_TIMES[platform],\n      status: 'queued'\n    }\n  });\n}\n\nreturn rows;"
+      },
+      "id": "7d0b0000-0000-4000-8000-00000000000b",
+      "name": "ScheduleAcrossMonth",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        560
+      ],
+      "notes": "Spreads posts Mon/Wed/Fri across consecutive weeks from the chosen start date."
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_content_queue_TABLE_ID",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-00000000000c",
+      "name": "QueuePosts",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nif (!rows.length) return [{ json: { html: '<p>Nothing was queued.</p>', total: 0 } }];\n\nconst byDate = {};\nfor (const r of rows) {\n  if (!byDate[r.scheduledFor]) byDate[r.scheduledFor] = [];\n  byDate[r.scheduledFor].push(r);\n}\n\nconst dates = Object.keys(byDate).sort();\n\nlet html = '<h2>Queued from: ' + rows[0].sourceTitle + '</h2>';\nhtml += '<p><strong>' + rows.length + ' posts</strong> scheduled across ' + dates.length + ' days, from ' + dates[0] + ' to ' + dates[dates.length - 1] + '.</p>';\nhtml += '<p style=\"color:#666\">Everything sits in <code>content_queue</code> with status <code>queued</code>. Edit or delete any row before its date. The daily publisher picks up whatever is due.</p>';\n\nfor (const d of dates) {\n  html += '<h3 style=\"margin-top:26px\">' + d + '</h3>';\n  for (const p of byDate[d]) {\n    html += '<div style=\"border-left:3px solid #ddd;padding:6px 14px;margin:10px 0\">';\n    html += '<strong style=\"text-transform:capitalize\">' + p.platform + '</strong> — <em>' + p.angle + '</em><br><br>';\n    html += String(p.content).slice(0, 400).replace(/\\n/g, '<br>');\n    if (p.content.length > 400) html += '…';\n    html += '</div>';\n  }\n}\n\nreturn [{ json: { html, total: rows.length } }];"
+      },
+      "id": "7d0b0000-0000-4000-8000-00000000000d",
+      "name": "BuildQueueReport",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_YOUR_EMAIL",
+        "subject": "=Content queue — {{ $json.total }} posts queued",
+        "message": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-00000000000e",
+      "name": "EmailQueueReport",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1480,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Publisher — runs every 30 min\n\nSeparate chain. Checks the queue, publishes anything whose date is today and whose posting time has arrived, then marks it done.\n\n**Posting windows** are set per platform in `ScheduleAcrossMonth`: LinkedIn 09:00, Facebook 13:00, Instagram 18:30. Edit them there.\n\nNo approval step here on purpose — you reviewed everything when it was queued. For per-post approval, insert a Wait node with webhook resume before `PublishQueued`.",
+        "height": 260,
+        "width": 420
+      },
+      "id": "7d0b0000-0000-4000-8000-00000000000f",
+      "name": "PublisherNote",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1160,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000010",
+      "name": "PublishCheck",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1160,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "dataTableId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_content_queue_TABLE_ID",
+          "mode": "id"
+        },
+        "returnAll": true,
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000011",
+      "name": "GetQueue",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -940,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d1",
+              "leftValue": "={{ $json.scheduledFor }}",
+              "rightValue": "={{ $today.toFormat('yyyy-MM-dd') }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "d2",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "queued",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "d3",
+              "leftValue": "={{ $json.scheduledTime }}",
+              "rightValue": "={{ $now.toFormat('HH:mm') }}",
+              "operator": {
+                "type": "string",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000012",
+      "name": "DueNow",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        -720,
+        1220
+      ],
+      "notes": "Dated today, still queued, and its posting time has arrived. String comparison works because both sides are zero-padded HH:mm."
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000013",
+      "name": "ThrottlePublish",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -500,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000014",
+      "name": "SpacePosts",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -280,
+        1320
+      ],
+      "webhookId": "7d0b0000-0000-4000-8000-000000000014"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.upload-post.com/api/upload_text",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"platform\": [{{ JSON.stringify($json.platform) }}],\n  \"title\": {{ JSON.stringify($json.content) }},\n  \"user\": \"REPLACE_WITH_YOUR_PUBLISHER_USER_ID\"\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000015",
+      "name": "PublishQueued",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -60,
+        1320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput",
+      "notes": "VERIFY field names against your publisher's docs — they differ between Upload-Post, Mixpost and Postiz."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_content_queue_TABLE_ID",
+          "mode": "id"
+        },
+        "conditions": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('ThrottlePublish').item.json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "published"
+          }
+        },
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000016",
+      "name": "MarkDone",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        160,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_content_queue_TABLE_ID",
+          "mode": "id"
+        },
+        "conditions": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('ThrottlePublish').item.json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "failed"
+          }
+        },
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000017",
+      "name": "MarkFailed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        160,
+        1420
+      ],
+      "notes": "Stays in the queue as 'failed' so you can retry it by hand rather than losing the post."
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.all().map(i => i.json);\nif (!results.length) return [];   // nothing due today — send no email\n\nconst ok = results.filter(r => r.status === 'published');\nconst bad = results.filter(r => r.status === 'failed');\n\nlet html = '<h2>Today\\'s posts</h2>';\nhtml += '<p>' + ok.length + ' published' + (bad.length ? ', <strong style=\"color:#b00\">' + bad.length + ' failed</strong>' : '') + '.</p>';\nif (bad.length) {\n  html += '<ul>';\n  for (const r of bad) html += '<li>' + r.platform + ' — ' + r.angle + '</li>';\n  html += '</ul><p>These are still in the queue marked <code>failed</code>. Retry by setting them back to <code>queued</code>.</p>';\n}\n\nreturn [{ json: { html, published: ok.length, failed: bad.length } }];"
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000018",
+      "name": "BuildDailySummary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_YOUR_EMAIL",
+        "subject": "=Published — {{ $json.published }} today{{ $json.failed ? ', ' + $json.failed + ' failed' : '' }}",
+        "message": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "7d0b0000-0000-4000-8000-000000000019",
+      "name": "EmailDailySummary",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        600,
+        1220
+      ]
+    }
+  ],
+  "connections": {
+    "SubmitSource": {
+      "main": [
+        [
+          {
+            "node": "HasURL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HasURL": {
+      "main": [
+        [
+          {
+            "node": "FetchPage",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NormalizeSource",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FetchPage": {
+      "main": [
+        [
+          {
+            "node": "ExtractArticle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ExtractArticle": {
+      "main": [
+        [
+          {
+            "node": "NormalizeSource",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NormalizeSource": {
+      "main": [
+        [
+          {
+            "node": "ExtractIdeas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ExtractIdeas": {
+      "main": [
+        [
+          {
+            "node": "ParseIdeas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ParseIdeas": {
+      "main": [
+        [
+          {
+            "node": "BatchIdeas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BatchIdeas": {
+      "main": [
+        [
+          {
+            "node": "BuildQueueReport",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WriteVariants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WriteVariants": {
+      "main": [
+        [
+          {
+            "node": "ScheduleAcrossMonth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ScheduleAcrossMonth": {
+      "main": [
+        [
+          {
+            "node": "QueuePosts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QueuePosts": {
+      "main": [
+        [
+          {
+            "node": "BatchIdeas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildQueueReport": {
+      "main": [
+        [
+          {
+            "node": "EmailQueueReport",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GetQueue": {
+      "main": [
+        [
+          {
+            "node": "DueNow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ThrottlePublish": {
+      "main": [
+        [
+          {
+            "node": "BuildDailySummary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SpacePosts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SpacePosts": {
+      "main": [
+        [
+          {
+            "node": "PublishQueued",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PublishQueued": {
+      "main": [
+        [
+          {
+            "node": "MarkDone",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "MarkFailed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MarkDone": {
+      "main": [
+        [
+          {
+            "node": "ThrottlePublish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MarkFailed": {
+      "main": [
+        [
+          {
+            "node": "ThrottlePublish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildDailySummary": {
+      "main": [
+        [
+          {
+            "node": "EmailDailySummary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PublishCheck": {
+      "main": [
+        [
+          {
+            "node": "GetQueue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DueNow": {
+      "main": [
+        [
+          {
+            "node": "ThrottlePublish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "content-repurposing-engine"
+  },
+  "tags": []
+}
